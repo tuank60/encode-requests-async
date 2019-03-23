@@ -65,7 +65,7 @@ routes = [
 app = Starlette(routes=routes)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 async def server():
     config = Config(app=app, lifespan="off")
     server = Server(config=config)
@@ -76,3 +76,10 @@ async def server():
         yield server
     finally:
         task.cancel()
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    loop = asyncio.get_event_loop()
+    yield loop
+    loop.close()
