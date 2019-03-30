@@ -1,13 +1,19 @@
-import asyncio
-from http.client import _encode
-import io
 import ssl
-import typing
 from urllib.parse import urlparse
+from urllib3.util.retry import Retry
+from urllib3.util import Timeout as TimeoutSauce
 
-import h11
+from urllib3.exceptions import LocationValueError
+
+import requests_async.exceptions as exceptions
+import requests_async.poolmanager as poolmanager
+
 import requests
-import urllib3
+
+DEFAULT_POOLBLOCK = False
+DEFAULT_POOLSIZE = 1
+DEFAULT_RETRIES = 0
+DEFAULT_POOL_TIMEOUT = None
 
 
 def no_verify():
@@ -21,96 +27,87 @@ def no_verify():
 
 
 class HTTPAdapter(requests.adapters.HTTPAdapter):
-    async def send(
-        self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None
-    ) -> requests.Response:
-        urlparts = urlparse(request.url)
 
-        hostname = urlparts.hostname
-        port = urlparts.port
-        if port is None:
-            port = {"http": 80, "https": 443}[urlparts.scheme]
-        target = urlparts.path
-        if urlparts.query:
-            target += "?" + urlparts.query
-        headers = [("host", urlparts.netloc)] + list(request.headers.items())
-
-        conn_kwargs = {"ssl": no_verify()} if urlparts.scheme == "https" else {}
-
-        if isinstance(timeout, tuple):
-            connect_timeout, read_timeout = timeout
+    def __init__(self, pool_connections=DEFAULT_POOLSIZE,
+                 pool_maxsize=DEFAULT_POOLSIZE, max_retries=DEFAULT_RETRIES,
+                 pool_block=DEFAULT_POOLBLOCK):
+        if max_retries == DEFAULT_RETRIES:
+            self.max_retries = Retry(0, read=False)
         else:
-            connect_timeout = timeout
-            read_timeout = timeout
+            self.max_retries = Retry.from_int(max_retries)
+        self.config = {}
+        self.proxy_manager = {}
+
+        super(HTTPAdapter, self).__init__()
+
+        self._pool_connections = pool_connections
+        self._pool_maxsize = pool_maxsize
+        self._pool_block = pool_block
+
+        self.init_poolmanager(pool_connections, pool_maxsize, block=pool_block)
+
+    def init_poolmanager(self, connections, maxsize, block=DEFAULT_POOLBLOCK, **pool_kwargs):
+        self._pool_connections = connections
+        self._pool_maxsize = maxsize
+        self._pool_block = block
+
+        self.poolmanager = poolmanager.PoolManager(num_pools=connections, maxsize=maxsize,
+                                                   block=block, strict=True, **pool_kwargs)
+
+    def get_connection(self, url, proxies=None):
+        parsed = urlparse(url)
+        url = parsed.geturl()
+        conn = self.poolmanager.connection_from_url(url)
+
+        return conn
+
+    async def send(
+            self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None
+    ) -> requests.Response:
 
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(hostname, port, **conn_kwargs), connect_timeout
-            )
-        except asyncio.TimeoutError:
-            raise requests.ConnectTimeout()
+            conn = self.get_connection(url=request.url, proxies=None)
+        except LocationValueError as e:
+            raise exceptions.InvalidURL(e, request=request)
 
-        conn = h11.Connection(our_role=h11.CLIENT)
+        if isinstance(timeout, tuple):
+            try:
+                connect, read = timeout
+                timeout = TimeoutSauce(connect=connect, read=read)
+            except ValueError as e:
+                # this may raise a string formatting error.
+                err = ("Invalid timeout {}. Pass a (connect, read) "
+                       "timeout tuple, or a single float to set "
+                       "both timeouts to the same value".format(timeout))
+                raise ValueError(err)
+        elif isinstance(timeout, TimeoutSauce):
+            pass
+        else:
+            timeout = TimeoutSauce(connect=timeout, read=timeout)
 
-        message = h11.Request(method=request.method, target=target, headers=headers)
-        data = conn.send(message)
-        writer.write(data)
-
-        if request.body:
-            body = (
-                _encode(request.body) if isinstance(request.body, str) else request.body
-            )
-            message = h11.Data(data=body)
-            data = conn.send(message)
-            writer.write(data)
-
-        message = h11.EndOfMessage()
-        data = conn.send(message)
-        writer.write(data)
-
-        status_code = 0
-        headers = []
-        reason = b""
-        buffer = io.BytesIO()
-
-        while True:
-            event = conn.next_event()
-            event_type = type(event)
-
-            if event_type is h11.NEED_DATA:
-                try:
-                    data = await asyncio.wait_for(reader.read(2048), read_timeout)
-                except asyncio.TimeoutError:
-                    raise requests.ReadTimeout()
-                conn.receive_data(data)
-
-            elif event_type is h11.Response:
-                status_code = event.status_code
-                headers = [
-                    (key.decode(), value.decode()) for key, value in event.headers
-                ]
-                reason = event.reason
-
-            elif event_type is h11.Data:
-                buffer.write(event.data)
-
-            elif event_type is h11.EndOfMessage:
-                buffer.seek(0)
-                break
-
-        writer.close()
-        if hasattr(writer, "wait_closed"):
-            await writer.wait_closed()
-
-        resp = urllib3.HTTPResponse(
-            body=buffer,
-            headers=headers,
-            status=status_code,
-            reason=reason,
+        resp = await conn.urlopen(
+            method=request.method,
+            url=request.url,
+            body=request.body,
+            headers=request.headers,
+            redirect=False,
+            assert_same_host=False,
             preload_content=False,
+            decode_content=False,
+            retries=self.max_retries,
+            timeout=timeout
         )
 
         return self.build_response(request, resp)
 
     async def close(self):
         pass
+
+    def proxy_manager_for(self, proxy, **proxy_kwargs):
+        raise NotImplementedError("Method is currently not available")
+
+    def cert_verify(self, conn, url, verify, cert):
+        raise NotImplementedError("Method is currently not available")
+
+    def request_url(self, request, proxies):
+        raise NotImplementedError("Method is currently not available")
