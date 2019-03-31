@@ -8,5 +8,6 @@ from requests.exceptions import (
     FileModeWarning,
     ConnectTimeout,
     ReadTimeout,
-    InvalidURL
+    InvalidURL,
+    SSLError
 )

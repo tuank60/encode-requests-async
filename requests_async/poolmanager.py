@@ -5,6 +5,7 @@ import urllib3.poolmanager as poolmanager
 
 pool_classes_by_scheme = {
     'http': connectionpool.HTTPConnectionPool,
+    'https': connectionpool.HTTPSConnectionPool
 }
 
 
@@ -25,11 +26,8 @@ class PoolManager(poolmanager.PoolManager):
         # Return False to re-raise any potential exceptions
         return False
 
-    def _new_pool(self, scheme, host, port, request_context=None):
-        pool_cls = self.pool_classes_by_scheme[scheme]
-        for key in ('scheme', 'host', 'port'):
-            request_context.pop(key, None)
-        return pool_cls(host, port, **request_context)
+    def clear(self):
+        pass
 
     def connection_from_host(self, host, port=None, scheme='http', pool_kwargs=None):
         if not host:

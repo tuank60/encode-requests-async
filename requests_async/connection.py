@@ -1,4 +1,5 @@
 import asyncio
+import ssl
 import requests
 import h11
 import io
@@ -7,6 +8,16 @@ import urllib3.packages.six.moves.http_client as http_client
 import http.client as httpclient
 import urllib3.util.timeout as timeout
 import urllib
+
+
+def no_verify():
+    # ssl.create_default_context()
+    sslcontext = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
+    sslcontext.options |= ssl.OP_NO_SSLv2
+    sslcontext.options |= ssl.OP_NO_SSLv3
+    sslcontext.options |= ssl.OP_NO_COMPRESSION
+    sslcontext.set_default_verify_paths()
+    return sslcontext
 
 
 port_by_scheme = {
@@ -214,3 +225,20 @@ class HTTPConnection(http_client.HTTPConnection):
         )
 
         return resp
+
+
+class HTTPSConnection(HTTPConnection):
+
+    async def _new_conn(self):
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host=self._dns_host, port=self.port, ssl=no_verify()),
+                self.timeout if self.timeout != timeout.Timeout.DEFAULT_TIMEOUT else None
+            )
+
+            self.conn = h11.Connection(our_role=h11.CLIENT)
+
+        except asyncio.TimeoutError:
+            raise requests.ConnectTimeout()
+
+        return reader, writer

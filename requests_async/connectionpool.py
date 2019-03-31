@@ -66,3 +66,8 @@ class HTTPConnectionPool(connectionpool.HTTPConnectionPool):
                                   encode_multipart=True, multipart_boundary=None,
                                   **urlopen_kw):
         raise NotImplementedError("Method is currently not available")
+
+
+class HTTPSConnectionPool(HTTPConnectionPool):
+    scheme = 'https'
+    ConnectionCls = connection.HTTPSConnection
