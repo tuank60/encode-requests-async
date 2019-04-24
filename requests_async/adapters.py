@@ -1,6 +1,7 @@
 import asyncio
 import io
 import os
+import socket
 import ssl
 import typing
 from http.client import _encode
