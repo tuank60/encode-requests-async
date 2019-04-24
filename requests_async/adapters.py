@@ -2,6 +2,7 @@ import asyncio
 import io
 import os
 import ssl
+import socket
 import typing
 from http.client import _encode
 from urllib.parse import urlparse
